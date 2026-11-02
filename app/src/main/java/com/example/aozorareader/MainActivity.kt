@@ -31,8 +31,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import java.io.File
-import java.nio.charset.Charset
+import java.net.URLEncoder
 
 // ==========================================
 // 1. データ構造 & Room DB
@@ -49,17 +50,14 @@ data class Book(
 
 @Dao
 interface BookDao {
-    @Query("SELECT * FROM books WHERE title LIKE '%' || :query || '%' OR author LIKE '%' || :query || '%'")
-    fun searchBooks(query: String): Flow<List<Book>>
-
     @Query("SELECT * FROM books WHERE isDownloaded = 1")
     fun getDownloadedBooks(): Flow<List<Book>>
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertAll(books: List<Book>)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdate(book: Book)
 
-    @Update
-    suspend fun updateBook(book: Book)
+    @Query("SELECT * FROM books WHERE id = :id LIMIT 1")
+    suspend fun getBookById(id: Int): Book?
 }
 
 @Database(entities = [Book::class], version = 1, exportSchema = false)
@@ -68,37 +66,55 @@ abstract class AppDatabase : RoomDatabase() {
 }
 
 // ==========================================
-// 2. リポジトリ (通信 & キャッシュ)
+// 2. リポジトリ (全作品API検索 & ダウンロード)
 // ==========================================
 class BookRepository(private val context: Context, private val bookDao: BookDao) {
     private val client = OkHttpClient()
 
-    suspend fun seedInitialData() = withContext(Dispatchers.IO) {
-        val initialBooks = listOf(
-            Book(1, "走れメロス", "太宰治", "https://raw.githubusercontent.com/aozorabunko/aozorabunko/master/cards/000035/files/1567_ruby_4948.txt"),
-            Book(2, "羅生門", "芥川龍之介", "https://raw.githubusercontent.com/aozorabunko/aozorabunko/master/cards/000879/files/127_ruby_150.txt"),
-            Book(3, "坊っちゃん", "夏目漱石", "https://raw.githubusercontent.com/aozorabunko/aozorabunko/master/cards/000148/files/752_ruby_2438.txt"),
-            Book(4, "銀河鉄道の夜", "宮沢賢治", "https://raw.githubusercontent.com/aozorabunko/aozorabunko/master/cards/000081/files/456_ruby_145.txt")
-        )
-        bookDao.insertAll(initialBooks)
+    // 青空文庫の全作品検索API
+    suspend fun searchOnline(query: String): List<Book> = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext emptyList()
+        try {
+            val encodedQuery = URLEncoder.encode(query.trim(), "UTF-8")
+            val url = "https://api.bungo.app/v1/books?q=$encodedQuery&limit=30"
+            val request = Request.Builder().url(url).build()
+            val response = client.newCall(request).execute()
+            val jsonStr = response.body?.string() ?: return@withContext emptyList()
+
+            val jsonArray = JSONArray(jsonStr)
+            val result = mutableListOf<Book>()
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                val id = obj.getInt("id")
+                val title = obj.getString("title")
+                val author = if (obj.has("author_name")) obj.getString("author_name") else "不明"
+                val textUrl = "https://api.bungo.app/v1/books/$id/text"
+
+                // 端末にすでに保存済みかチェック
+                val existing = bookDao.getBookById(id)
+                if (existing != null && existing.isDownloaded) {
+                    result.add(existing)
+                } else {
+                    result.add(Book(id, title, author, textUrl, null, false))
+                }
+            }
+            result
+        } catch (e: Exception) {
+            e.printStackTrace()
+            emptyList()
+        }
     }
 
+    // 本文ダウンロード
     suspend fun downloadBook(book: Book): Boolean = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder().url(book.downloadUrl).build()
             val response = client.newCall(request).execute()
-            val bytes = response.body?.bytes() ?: return@withContext false
-
-            // Shift_JIS (MS932) または UTF-8 自動判別
-            val rawText = try {
-                String(bytes, Charset.forName("MS932"))
-            } catch (e: Exception) {
-                String(bytes, Charsets.UTF_8)
-            }
+            val text = response.body?.string() ?: return@withContext false
 
             val file = File(context.filesDir, "book_${book.id}.txt")
-            file.writeText(rawText, Charsets.UTF_8)
-            bookDao.updateBook(book.copy(isDownloaded = true, localFilePath = file.absolutePath))
+            file.writeText(text, Charsets.UTF_8)
+            bookDao.insertOrUpdate(book.copy(isDownloaded = true, localFilePath = file.absolutePath))
             true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -108,18 +124,16 @@ class BookRepository(private val context: Context, private val bookDao: BookDao)
 }
 
 // ==========================================
-// 3. 青空文庫パーサー (ルビ・縦書きHTML生成)
+// 3. 青空文庫パーサー
 // ==========================================
 object AozoraParser {
     fun toHtml(rawText: String, initialFontSize: Int, initialDarkMode: Boolean): String {
         var text = rawText
-        // 青空文庫ルビ記法: ｜漢字《かんじ》 または 漢字《かんじ》
+        // ルビ記法変換
         text = text.replace(Regex("(?:｜)?([一-龠々〆ヵヶ]+)《([^》]+)》")) { match ->
             "<ruby>${match.groupValues[1]}<rt>${match.groupValues[2]}</rt></ruby>"
         }
-        // 注記の除去
         text = text.replace(Regex("［＃.*?］"), "")
-        // 改行処理
         text = text.replace("\n", "<br>")
 
         val bgColor = if (initialDarkMode) "#121212" else "#faf7f0"
@@ -176,16 +190,12 @@ object AozoraParser {
 }
 
 // ==========================================
-// 4. UI: 読書ビューア画面 (縦書き・拡大・ダークモード)
+// 4. UI: リーダー画面
 // ==========================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReaderScreen(
-    title: String,
-    filePath: String,
-    onBack: () -> Unit
-) {
-    var fontSize by remember { mutableIntStateOf(18) } // デフォルト 18px
+fun ReaderScreen(title: String, filePath: String, onBack: () -> Unit) {
+    var fontSize by remember { mutableIntStateOf(18) }
     var isDarkMode by remember { mutableStateOf(false) }
     var showControls by remember { mutableStateOf(true) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
@@ -195,28 +205,19 @@ fun ReaderScreen(
         if (file.exists()) {
             AozoraParser.toHtml(file.readText(Charsets.UTF_8), fontSize, isDarkMode)
         } else {
-            "<html><body><p>ファイルが見つかりません</p></body></html>"
+            "<html><body><p>作品を読み込めませんでした</p></body></html>"
         }
     }
 
-    // スタイル変更をJavaScriptで即座に反映（スクロール位置をリセットさせない）
-    LaunchedEffect(isDarkMode) {
-        webViewRef?.evaluateJavascript("updateTheme($isDarkMode);", null)
-    }
-    LaunchedEffect(fontSize) {
-        webViewRef?.evaluateJavascript("updateFontSize($fontSize);", null)
-    }
+    LaunchedEffect(isDarkMode) { webViewRef?.evaluateJavascript("updateTheme($isDarkMode);", null) }
+    LaunchedEffect(fontSize) { webViewRef?.evaluateJavascript("updateFontSize($fontSize);", null) }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 本文 WebView
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() }
-                ) {
-                    showControls = !showControls // タップでメニュー表示切替
+                .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
+                    showControls = !showControls
                 },
             factory = { context ->
                 WebView(context).apply {
@@ -232,11 +233,10 @@ fun ReaderScreen(
             }
         )
 
-        // 上部ツールバー (タップで出入り)
         AnimatedVisibility(
             visible = showControls,
-            enter = slideInVertically(initialOffsetY = { -it }),
-            exit = slideOutVertically(targetOffsetY = { -it }),
+            enter = slideInVertically { -it },
+            exit = slideOutVertically { -it },
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
             TopAppBar(
@@ -247,38 +247,24 @@ fun ReaderScreen(
                     }
                 },
                 actions = {
-                    // 文字縮小
-                    IconButton(
-                        onClick = { if (fontSize > 12) fontSize -= 2 },
-                        enabled = fontSize > 12
-                    ) {
+                    IconButton(onClick = { if (fontSize > 12) fontSize -= 2 }, enabled = fontSize > 12) {
                         Icon(Icons.Default.TextDecrease, contentDescription = "文字縮小")
                     }
-                    // 文字拡大
-                    IconButton(
-                        onClick = { if (fontSize < 32) fontSize += 2 },
-                        enabled = fontSize < 32
-                    ) {
+                    IconButton(onClick = { if (fontSize < 32) fontSize += 2 }, enabled = fontSize < 32) {
                         Icon(Icons.Default.TextIncrease, contentDescription = "文字拡大")
                     }
-                    // ダークモード切り替え
                     IconButton(onClick = { isDarkMode = !isDarkMode }) {
-                        Icon(
-                            if (isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode,
-                            contentDescription = "テーマ切り替え"
-                        )
+                        Icon(if (isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode, contentDescription = "テーマ")
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
-                )
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f))
             )
         }
     }
 }
 
 // ==========================================
-// 5. UI: メイン画面 (本棚 & 検索タブ)
+// 5. UI: メイン画面 (全作品検索対応)
 // ==========================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -286,7 +272,9 @@ fun MainScreen(
     downloadedBooks: List<Book>,
     searchResults: List<Book>,
     searchQuery: String,
+    isSearching: Boolean,
     onQueryChange: (String) -> Unit,
+    onSearchSubmit: () -> Unit,
     onDownloadClick: (Book) -> Unit,
     onBookClick: (Book) -> Unit
 ) {
@@ -294,9 +282,7 @@ fun MainScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(if (selectedTab == 0) "本棚（オフライン）" else "作品を探す") }
-            )
+            TopAppBar(title = { Text(if (selectedTab == 0) "本棚（オフライン）" else "青空文庫 全作品検索") })
         },
         bottomBar = {
             NavigationBar {
@@ -317,10 +303,9 @@ fun MainScreen(
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             if (selectedTab == 0) {
-                // 本棚タブ
                 if (downloadedBooks.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("保存された本がありません。\n「探す」タブからダウンロードしてください。")
+                        Text("保存された作品がありません。\n「探す」タブから好きな本を検索して保存してください。")
                     }
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -329,9 +314,7 @@ fun MainScreen(
                                 headlineContent = { Text(book.title) },
                                 supportingContent = { Text(book.author) },
                                 trailingContent = {
-                                    FilledTonalButton(onClick = { onBookClick(book) }) {
-                                        Text("読む")
-                                    }
+                                    FilledTonalButton(onClick = { onBookClick(book) }) { Text("読む") }
                                 },
                                 modifier = Modifier.clickable { onBookClick(book) }
                             )
@@ -340,36 +323,48 @@ fun MainScreen(
                     }
                 }
             } else {
-                // 探すタブ
                 Column(modifier = Modifier.fillMaxSize()) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = onQueryChange,
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp),
-                        placeholder = { Text("作品名・著者名で検索") },
-                        singleLine = true,
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
-                    )
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(searchResults) { book ->
-                            ListItem(
-                                headlineContent = { Text(book.title) },
-                                supportingContent = { Text(book.author) },
-                                trailingContent = {
-                                    if (book.isDownloaded) {
-                                        TextButton(onClick = { onBookClick(book) }) {
-                                            Text("読む")
-                                        }
-                                    } else {
-                                        IconButton(onClick = { onDownloadClick(book) }) {
-                                            Icon(Icons.Default.Download, contentDescription = "ダウンロード")
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = onQueryChange,
+                            modifier = Modifier.weight(1f),
+                            placeholder = { Text("作品名・著者名（例: 漱石、メロス）") },
+                            singleLine = true
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(onClick = onSearchSubmit) {
+                            Text("検索")
+                        }
+                    }
+
+                    if (isSearching) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    } else {
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            items(searchResults) { book ->
+                                ListItem(
+                                    headlineContent = { Text(book.title) },
+                                    supportingContent = { Text(book.author) },
+                                    trailingContent = {
+                                        if (book.isDownloaded) {
+                                            TextButton(onClick = { onBookClick(book) }) { Text("読む") }
+                                        } else {
+                                            IconButton(onClick = { onDownloadClick(book) }) {
+                                                Icon(Icons.Default.Download, contentDescription = "ダウンロード")
+                                            }
                                         }
                                     }
-                                }
-                            )
-                            HorizontalDivider()
+                                )
+                                HorizontalDivider()
+                            }
                         }
                     }
                 }
@@ -379,34 +374,27 @@ fun MainScreen(
 }
 
 // ==========================================
-// 6. エントリーポイント (Activity)
+// 6. エントリーポイント
 // ==========================================
 class MainActivity : ComponentActivity() {
-    private val db by lazy {
-        Room.databaseBuilder(applicationContext, AppDatabase::class.java, "aozora.db").build()
-    }
+    private val db by lazy { Room.databaseBuilder(applicationContext, AppDatabase::class.java, "aozora.db").build() }
     private val repository by lazy { BookRepository(this, db.bookDao()) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        lifecycleScope.launch {
-            repository.seedInitialData()
-        }
-
         setContent {
             MaterialTheme {
                 var currentReadingBook by remember { mutableStateOf<Book?>(null) }
                 var searchQuery by remember { mutableStateOf("") }
+                var searchResults by remember { mutableStateOf<List<Book>>(emptyList()) }
+                var isSearching by remember { mutableStateOf(false) }
 
                 val downloadedBooks by db.bookDao().getDownloadedBooks().collectAsState(initial = emptyList())
-                val searchResults by db.bookDao().searchBooks(searchQuery).collectAsState(initial = emptyList())
                 val scope = rememberCoroutineScope()
                 val snackbarHostState = remember { SnackbarHostState() }
 
-                Scaffold(
-                    snackbarHost = { SnackbarHost(snackbarHostState) }
-                ) { _ ->
+                Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { _ ->
                     if (currentReadingBook != null) {
                         ReaderScreen(
                             title = currentReadingBook!!.title,
@@ -418,20 +406,30 @@ class MainActivity : ComponentActivity() {
                             downloadedBooks = downloadedBooks,
                             searchResults = searchResults,
                             searchQuery = searchQuery,
+                            isSearching = isSearching,
                             onQueryChange = { searchQuery = it },
+                            onSearchSubmit = {
+                                scope.launch {
+                                    isSearching = true
+                                    searchResults = repository.searchOnline(searchQuery)
+                                    isSearching = false
+                                }
+                            },
                             onDownloadClick = { book ->
                                 scope.launch {
                                     val success = repository.downloadBook(book)
                                     if (success) {
-                                        snackbarHostState.showSnackbar("『${book.title}』をダウンロードしました")
+                                        // 検索結果側のダウンロード済みフラグも更新
+                                        searchResults = searchResults.map {
+                                            if (it.id == book.id) it.copy(isDownloaded = true) else it
+                                        }
+                                        snackbarHostState.showSnackbar("『${book.title}』をオフラインに保存しました")
                                     } else {
                                         snackbarHostState.showSnackbar("ダウンロードに失敗しました")
                                     }
                                 }
                             },
-                            onBookClick = { book ->
-                                currentReadingBook = book
-                            }
+                            onBookClick = { book -> currentReadingBook = book }
                         )
                     }
                 }
