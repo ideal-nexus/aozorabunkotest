@@ -22,7 +22,7 @@ jobs:
 
       - name: Prepare Android Project & Apply Icon
         run: |
-          mkdir -p gradle/wrapper app/src/main/res/drawable
+          mkdir -p gradle/wrapper app/src/main/res/mipmap-xxxhdpi
 
           # gradle.properties
           cat << 'EOF' > gradle.properties
@@ -78,8 +78,8 @@ jobs:
                   applicationId = "com.example.aozorareader"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 4
-                  versionName = "4.0"
+                  versionCode = 5
+                  versionName = "5.0"
               }
 
               buildTypes {
@@ -118,29 +118,10 @@ jobs:
           }
           EOF
 
-          # 青空文庫アイコンを自動ダウンロードして各解像度に配置
+          # 青空文庫アイコンをダウンロードして最高画質mipmapに配置
           curl -L -o aozora_icon.png "https://drive.google.com/uc?export=download&id=1zV12L64prIDB8i-YZllpASKXSLapyTsm"
-
-          python3 -c "
-          from PIL import Image
-          import os
-
-          if os.path.exists('aozora_icon.png'):
-              img = Image.open('aozora_icon.png')
-              sizes = {
-                  'mipmap-mdpi': 48,
-                  'mipmap-hdpi': 72,
-                  'mipmap-xhdpi': 96,
-                  'mipmap-xxhdpi': 144,
-                  'mipmap-xxxhdpi': 192,
-              }
-              for folder, sz in sizes.items():
-                  target_dir = f'app/src/main/res/{folder}'
-                  os.makedirs(target_dir, exist_ok=True)
-                  img.resize((sz, sz), Image.Resampling.LANCZOS).save(f'{target_dir}/ic_launcher.png')
-                  img.resize((sz, sz), Image.Resampling.LANCZOS).save(f'{target_dir}/ic_launcher_round.png')
-              print('Auto icons configured!')
-          "
+          cp aozora_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          cp aozora_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
 
           # app/src/main/AndroidManifest.xml
           cat << 'EOF' > app/src/main/AndroidManifest.xml
