@@ -20,38 +20,93 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Prepare Android Project & Apply Icon
+      - name: Build Official Aozora DB & Project Assets
         run: |
-          mkdir -p gradle/wrapper app/src/main/res/mipmap-xxxhdpi
+          set -e
+          mkdir -p gradle/wrapper app/src/main/res/mipmap-xxxhdpi app/src/main/assets/databases
 
-          # gradle.properties
+          # 1. 青空文庫アイコンを配置
+          cat << 'EOF' | base64 -d > app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAB/lBMVEXq2cjfx6bfzqjk49QAIkkZaZuty86bop5haWyBe3H/AADexqTs2a/z3sPx3cEmMj4eQ19+gX6ckX/UqqrZv6IAAAAbV4f2584pZ5Q2h7BsmLBPlrQaSXZ1o7ns1rUsd6UkWoaJqLdQiKi1xcnU1cxLeJeUtcP+9Nanu8TPxrP///8pVHnGy8gdY5WvtrPo3MgNO2nlzKuPs7s2cppnjKRXg5xthpb/v79sdXhkdYLbxKTMzJnr0rIGJ0j04cNZobxsqsGFm6eQlZL747olTHAUNlWKrcFRZXOsp5dIfaE9kLbt2rsnOUnu3sKnrKlGa4j+/OMzR1Z2scNKW2YdUXxKVFokbqAAGTdapcCHi4dna2u0wLzHu6by4rQQJzz/qqr//6zHtpzb0rv//3+jm4yKhXlCTFT/f3/v2bmqqqru2ba/v3/iyKft17fu2LjiyKnhyKjhyKj//wAabaI8YXzkyKvw27t7kZt9sL2/v7/dxKPiyajiyKcACSt/f3+8sZwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+ezEfAAAAgHRSTlMSWCX3////////AbH/aLv/////BmAA//7////////6//////////////4B/////v7/+f//////BP//YAUR/xH////+/f/////+//+D/4D+//////////////7///4P/wMD/v4C////AnEDLQRUrtApstAB//8RVf//BJJyjv8C/hVt4j0AABasSURBVHjatZuJY9vGscaVu/c7aVC4SBwECJECSVCiqdSMxJty9CTKsqLoiOLbTuImztm0aZN/vd/MLkCAomy9WB1bxEFw57czs7O7WGApt1hWVv52789ZWVpa+vPSn3+V3Lv52colipYWar/5MHft8vTmytUAvlmhC28t/fDs2YeJ/N9VhK76cJE8e/bD0gco9HcrK68GuEcn//gn01SuVUzzL8/elMW/DODh09ybf/xTTVFqMUHtV+us1VAIpM+fKM788o1PcvNG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
+          EOF
+          cp app/src/main/res/mipmap-xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+
+          # 2. 青空文庫公式全作品カタログCSVからSQLite DBを自動生成 (プレースホルダ数完全一致)
+          python3 -c "
+          import urllib.request, zipfile, io, csv, sqlite3
+
+          url = 'https://www.aozora.gr.jp/index_pages/list_person_all_extended_utf8.zip'
+          req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+          with urllib.request.urlopen(req) as resp:
+              z = zipfile.ZipFile(io.BytesIO(resp.read()))
+              csv_filename = [f for f in z.namelist() if f.endswith('.csv')][0]
+              with z.open(csv_filename) as f:
+                  reader = csv.reader(io.TextIOWrapper(f, 'utf-8-sig'))
+                  header = next(reader)
+                  
+                  idx_id = header.index('作品ID')
+                  idx_title = header.index('作品名')
+                  idx_last = header.index('姓')
+                  idx_first = header.index('名')
+                  idx_url = header.index('テキストファイルURL')
+                  
+                  books = {}
+                  for r in reader:
+                      raw_url = r[idx_url].strip().replace('http://', 'https://')
+                      if not raw_url:
+                          continue
+                      bid = int(r[idx_id])
+                      name = (r[idx_last] + r[idx_first]).strip()
+                      if bid in books:
+                          if name and name not in books[bid][1]:
+                              books[bid][1].append(name)
+                      else:
+                          books[bid] = [r[idx_title].strip(), [name] if name else [], raw_url]
+                  
+                  db_path = 'app/src/main/assets/databases/aozora_official.db'
+                  conn = sqlite3.connect(db_path)
+                  c = conn.cursor()
+                  c.execute('''
+                      CREATE TABLE books (
+                          id INTEGER NOT NULL PRIMARY KEY,
+                          title TEXT NOT NULL,
+                          author TEXT NOT NULL,
+                          downloadUrl TEXT NOT NULL,
+                          localFilePath TEXT,
+                          isDownloaded INTEGER NOT NULL
+                      )
+                  ''')
+                  rows = [
+                      (i, t, '・'.join(a) if a else '不明', u, None, 0)
+                      for i, (t, a, u) in books.items()
+                  ]
+                  # プレースホルダを6つに完全一致
+                  c.executemany('INSERT INTO books VALUES (?,?,?,?,?,?)', rows)
+                  c.execute('PRAGMA user_version = 1')
+                  conn.commit()
+                  conn.close()
+                  print(f'Catalog DB created with {len(rows)} books!')
+          "
+
+          # 3. Gradle設定
           cat << 'EOF' > gradle.properties
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
           android.nonTransitiveRClass=true
           EOF
 
-          # settings.gradle.kts
           cat << 'EOF' > settings.gradle.kts
           pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
           }
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
+              repositories { google(); mavenCentral() }
           }
           rootProject.name = "AozoraReader"
           include(":app")
           EOF
 
-          # root build.gradle.kts
           cat << 'EOF' > build.gradle.kts
           plugins {
               id("com.android.application") version "8.5.2" apply false
@@ -61,7 +116,6 @@ jobs:
           }
           EOF
 
-          # app/build.gradle.kts
           cat << 'EOF' > app/build.gradle.kts
           plugins {
               id("com.android.application")
@@ -78,25 +132,19 @@ jobs:
                   applicationId = "com.example.aozorareader"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 5
-                  versionName = "5.0"
+                  versionCode = 9
+                  versionName = "9.0"
               }
 
               buildTypes {
-                  release {
-                      isMinifyEnabled = false
-                  }
+                  release { isMinifyEnabled = false }
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
-              buildFeatures {
-                  compose = true
-              }
+              kotlinOptions { jvmTarget = "17" }
+              buildFeatures { compose = true }
           }
 
           dependencies {
@@ -113,17 +161,10 @@ jobs:
               ksp("androidx.room:room-compiler:$roomVersion")
 
               implementation("com.squareup.okhttp3:okhttp:4.12.0")
-              implementation("org.json:json:20240303")
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
           }
           EOF
 
-          # 青空文庫アイコンをダウンロードして最高画質mipmapに配置
-          curl -L -o aozora_icon.png "https://drive.google.com/uc?export=download&id=1zV12L64prIDB8i-YZllpASKXSLapyTsm"
-          cp aozora_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-          cp aozora_icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
-
-          # app/src/main/AndroidManifest.xml
           cat << 'EOF' > app/src/main/AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -137,7 +178,8 @@ jobs:
                   android:theme="@android:style/Theme.Material.NoActionBar">
                   <activity
                       android:name=".MainActivity"
-                      android:exported="true">
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
