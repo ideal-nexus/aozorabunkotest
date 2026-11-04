@@ -59,14 +59,18 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE isDownloaded = 1 ORDER BY id DESC")
     fun getDownloadedBooks(): Flow<List<Book>>
 
-    @Query("SELECT * FROM books WHERE title LIKE '%' || :query || '%' OR author LIKE '%' || :query || '%' ORDER BY title ASC LIMIT 100")
+    // SQL側でも空白を除去して比較 (空白入りタイトルも完全ヒット)
+    @Query("""
+        SELECT * FROM books 
+        WHERE REPLACE(REPLACE(title, ' ', ''), '　', '') LIKE '%' || :query || '%' 
+           OR REPLACE(REPLACE(author, ' ', ''), '　', '') LIKE '%' || :query || '%' 
+        ORDER BY title ASC 
+        LIMIT 100
+    """)
     suspend fun searchLocal(query: String): List<Book>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrUpdate(book: Book)
-
-    @Query("SELECT * FROM books WHERE id = :id LIMIT 1")
-    suspend fun getBookById(id: Int): Book?
 }
 
 @Database(entities = [Book::class], version = 1, exportSchema = false)
@@ -285,6 +289,7 @@ fun ReaderScreen(book: Book, onBack: () -> Unit) {
             DisposableEffect(Unit) {
                 onDispose {
                     webViewRef?.destroy()
+                    webViewRef = null
                 }
             }
         }
@@ -320,7 +325,7 @@ fun ReaderScreen(book: Book, onBack: () -> Unit) {
 }
 
 // ==========================================
-// 5. UI: メイン画面
+// 5. UI: メイン画面 (多重ダウンロード防止)
 // ==========================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -330,6 +335,7 @@ fun MainScreen(
     searchQuery: String,
     isSearching: Boolean,
     hasSearched: Boolean,
+    downloadingIds: Set<Int>,
     onQueryChange: (String) -> Unit,
     onSearchSubmit: () -> Unit,
     onDownloadClick: (Book) -> Unit,
@@ -415,12 +421,18 @@ fun MainScreen(
                     } else {
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
                             items(searchResults, key = { it.id }) { book ->
+                                val isDownloading = downloadingIds.contains(book.id)
                                 ListItem(
                                     headlineContent = { Text(book.title) },
                                     supportingContent = { Text(book.author) },
                                     trailingContent = {
                                         if (book.isDownloaded) {
                                             TextButton(onClick = { onBookClick(book) }) { Text("読む") }
+                                        } else if (isDownloading) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(24.dp),
+                                                strokeWidth = 2.5.dp
+                                            )
                                         } else {
                                             IconButton(onClick = { onDownloadClick(book) }) {
                                                 Icon(Icons.Default.Download, contentDescription = "ダウンロード")
@@ -459,13 +471,18 @@ class MainActivity : ComponentActivity() {
                 var searchResults by remember { mutableStateOf<List<Book>>(emptyList()) }
                 var isSearching by remember { mutableStateOf(false) }
                 var hasSearched by rememberSaveable { mutableStateOf(false) }
+                var downloadingIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
 
                 val downloadedBooksFlow = remember { db.bookDao().getDownloadedBooks() }
                 val downloadedBooks by downloadedBooksFlow.collectAsState(initial = emptyList())
                 val scope = rememberCoroutineScope()
                 val snackbarHostState = remember { SnackbarHostState() }
 
-                Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
+                Scaffold(snackbarHost = {
+                    if (currentReadingBook == null) {
+                        SnackbarHost(snackbarHostState)
+                    }
+                }) { padding ->
                     Box(modifier = Modifier.padding(padding)) {
                         if (currentReadingBook != null) {
                             ReaderScreen(
@@ -479,6 +496,7 @@ class MainActivity : ComponentActivity() {
                                 searchQuery = searchQuery,
                                 isSearching = isSearching,
                                 hasSearched = hasSearched,
+                                downloadingIds = downloadingIds,
                                 onQueryChange = { searchQuery = it },
                                 onSearchSubmit = {
                                     scope.launch {
@@ -489,13 +507,18 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onDownloadClick = { book ->
-                                    scope.launch {
-                                        val updated = repository.downloadBook(book)
-                                        if (updated != null) {
-                                            searchResults = searchResults.map { if (it.id == book.id) updated else it }
-                                            snackbarHostState.showSnackbar("『${book.title}』をオフラインに保存しました")
-                                        } else {
-                                            snackbarHostState.showSnackbar("ダウンロードに失敗しました")
+                                    if (!downloadingIds.contains(book.id)) {
+                                        scope.launch {
+                                            downloadingIds = downloadingIds + book.id
+                                            val updated = repository.downloadBook(book)
+                                            downloadingIds = downloadingIds - book.id
+
+                                            if (updated != null) {
+                                                searchResults = searchResults.map { if (it.id == book.id) updated else it }
+                                                snackbarHostState.showSnackbar("『${book.title}』をオフラインに保存しました")
+                                            } else {
+                                                snackbarHostState.showSnackbar("ダウンロードに失敗しました")
+                                            }
                                         }
                                     }
                                 },
