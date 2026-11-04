@@ -152,8 +152,8 @@ jobs:
                   applicationId = "com.example.aozorareader"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 10
-                  versionName = "10.0"
+                  versionCode = 11
+                  versionName = "11.0"
               }
 
               buildTypes {
@@ -194,11 +194,11 @@ jobs:
                   android:label="青空リーダー"
                   android:icon="@mipmap/ic_launcher"
                   android:roundIcon="@mipmap/ic_launcher_round"
-                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
-                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode">
+                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode|density|fontScale">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -216,3 +216,5 @@ jobs:
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+
+              
